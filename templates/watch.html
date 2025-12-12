@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Playing {{ ch.name }}{% endblock %}
+{% block extra_head %}
+  <style>
+    .player-wrapper { display:flex; flex-direction:column; gap:12px; }
+    video { width: 100%; max-width: 960px; background:#000; border-radius:14px; border:1px solid #ddd; }
+  </style>
+{% endblock %}
+{% block content %}
+  <div class="top" style="margin-bottom:12px;">
+    <a class="btn" href="{{ request.referrer or url_for('channel_detail', channel_id=ch.id) }}">Back</a>
+    <a class="btn" href="{{ url_for('channel_detail', channel_id=ch.id) }}">All streams</a>
+  </div>
+  <h2>Playing {{ ch.name }}</h2>
+  <div class="meta">Channel ID: {{ ch.id }} | Stream {{ stream_index + 1 }} of {{ total_streams }}</div>
+
+  <div class="player-wrapper" style="margin-top:12px;">
+    <video controls autoplay playsinline>
+      <source src="{{ stream.url }}" type="application/x-mpegURL">
+      Your browser does not support HTML5 video. <a href="{{ stream.url }}">Open stream</a>.
+    </video>
+    <div class="meta">{{ stream.title or 'Untitled stream' }}{% if stream.quality %} • Quality: {{ stream.quality }}{% endif %}</div>
+    <div class="meta" style="word-break:break-all;">{{ stream.url }}</div>
+    {% if stream.referrer %}<div class="meta">Referrer: {{ stream.referrer }}</div>{% endif %}
+    {% if stream.user_agent %}<div class="meta">User-Agent: {{ stream.user_agent }}</div>{% endif %}
+  </div>
+{% endblock %}
