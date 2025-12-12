@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}IPTV Browser{% endblock %}
+{% block content %}
+  <h2>Local IPTV Browser</h2>
+  <div class="small">
+    Data source: iptv-org/api (cached locally). Streams open directly in the browser.
+  </div>
+
+  <div class="top" style="margin-top:12px;">
+    <form method="get" class="top" style="flex:1; min-width: 320px;">
+      <input name="q" placeholder="Search channel name…" value="{{ q }}" style="flex:1; min-width: 240px;">
+      <select name="country">
+        <option value="">All countries</option>
+        {% for c in countries %}
+          <option value="{{ c }}" {% if country==c %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+      <select name="category">
+        <option value="">All categories</option>
+        {% for cat in categories %}
+          <option value="{{ cat }}" {% if category==cat %}selected{% endif %}>{{ cat }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Apply</button>
+    </form>
+
+    <form method="post" action="{{ url_for('force_refresh') }}">
+      <button class="btn danger" type="submit">Refresh cache</button>
+    </form>
+  </div>
+
+  <div class="small" style="margin-top:6px;">
+    Showing {{ results_count }} channels (only channels with streams). Click a stream to play.
+  </div>
+  <hr>
+
+  {% for item in items %}
+    <div class="row">
+      <div class="grow">
+        <div class="name">{{ item["channel"].name }}</div>
+        <div class="meta">
+          <span class="pill">Country: {{ item["channel"].country or "—" }}</span>
+          {% for cat in item["channel"].categories[:4] %}
+            <span class="pill">{{ cat }}</span>
+          {% endfor %}
+        </div>
+        <div class="meta">Channel ID: {{ item["channel"].id }}</div>
+      </div>
+
+      <div class="links">
+        {% for s in item["streams"][:3] %}
+          <a class="btn" href="{{ url_for('watch', channel_id=item['channel'].id, stream_index=loop.index0) }}">
+            Play{% if s.quality %} ({{ s.quality }}){% endif %}{% if s.title %} - {{ s.title }}{% endif %}
+          </a>
+        {% endfor %}
+
+        {% if item["streams"]|length > 3 %}
+          <a class="btn" href="{{ url_for('channel_detail', channel_id=item['channel'].id) }}">More…</a>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+
+  {% if items|length == 0 %}
+    <p>No results.</p>
+  {% endif %}
+{% endblock %}
