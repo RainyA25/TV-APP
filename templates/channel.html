@@ -1,27 +1,21 @@
-{% extends "base.html" %}
-{% block title %}{{ ch.name }} - Streams{% endblock %}
+{% extends "layout.html" %}
 {% block content %}
-  <a class="btn" href="{{ url_for('index') }}">Back</a>
-  <h2 style="margin-top:12px;">{{ ch.name }}</h2>
-  <div class="meta">Channel ID: {{ ch.id }} | Country: {{ ch.country or "—" }} | Categories: {{ ", ".join(ch.categories) if ch.categories else "—" }}</div>
-  <hr>
+<a class="btn" href="{{ url_for('index') }}">Back</a>
+<h2>{{ ch.name }}</h2>
+<div class="small">Channel ID: {{ ch.id }} | Country: {{ ch.country or "—" }}</div>
+<hr>
 
+{% if streams|length == 0 %}
+  <p>No browser-playable streams for this channel.</p>
+{% else %}
   {% for s in streams %}
     <div class="row">
       <div class="grow">
-        <div class="name">
-          {% if s.title %}{{ s.title }}{% else %}Stream {{ loop.index }}{% endif %}
-          {% if s.quality %} ({{ s.quality }}){% endif %}
-        </div>
+        <div class="name">{{ s.title or ("Stream " ~ loop.index) }}{% if s.quality %} ({{ s.quality }}){% endif %}</div>
         <div class="meta">{{ s.url }}</div>
-        {% if s.referrer %}<div class="meta">Referrer: {{ s.referrer }}</div>{% endif %}
-        {% if s.user_agent %}<div class="meta">User-Agent: {{ s.user_agent }}</div>{% endif %}
       </div>
-      <a class="btn" href="{{ url_for('watch', channel_id=ch.id, stream_index=loop.index0) }}">Play</a>
+      <a class="btn" href="{{ url_for('play', channel_id=ch.id, stream_index=loop.index0) }}">Play</a>
     </div>
   {% endfor %}
-
-  {% if streams|length == 0 %}
-    <p>No streams found for this channel.</p>
-  {% endif %}
+{% endif %}
 {% endblock %}
