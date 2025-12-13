@@ -32,6 +32,9 @@
   <div class="small" style="margin-top:6px;">
     Showing {{ results_count }} channels (only channels with streams). Click a stream to play.
   </div>
+  {% if error_message %}
+    <div class="alert">{{ error_message }}</div>
+  {% endif %}
   <hr>
 
   {% for item in items %}

@@ -69,15 +69,29 @@ def load_data() -> Tuple[Dict[str, Channel], Dict[str, List[Stream]]]:
     """
     _ensure_cache_dir()
 
+    payload: Optional[Dict[str, Any]] = None
+
+    # Use cached data if it's still fresh
     if _is_cache_fresh(CACHE_FILE, CACHE_TTL_SECONDS):
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             payload = json.load(f)
     else:
-        channels_raw = fetch_json(CHANNELS_URL)
-        streams_raw = fetch_json(STREAMS_URL)
-        payload = {"channels": channels_raw, "streams": streams_raw}
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+        try:
+            channels_raw = fetch_json(CHANNELS_URL)
+            streams_raw = fetch_json(STREAMS_URL)
+            payload = {"channels": channels_raw, "streams": streams_raw}
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            # If the network fetch fails, try to fall back to any existing cache
+            if os.path.exists(CACHE_FILE):
+                with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            else:
+                raise
+
+    if payload is None:
+        raise RuntimeError("IPTV data could not be loaded from API or cache.")
 
     channels_by_id: Dict[str, Channel] = {}
     for c in payload["channels"]:
@@ -124,7 +138,12 @@ def refresh_cache() -> None:
 # -----------------------------
 @app.get("/")
 def index():
-    channels_by_id, streams_by_channel = load_data()
+    error_message: Optional[str] = None
+    try:
+        channels_by_id, streams_by_channel = load_data()
+    except Exception as exc:  # pylint: disable=broad-except
+        error_message = f"Unable to load channels right now: {exc}"
+        channels_by_id, streams_by_channel = {}, {}
 
     # Query params
     q = (request.args.get("q") or "").strip().lower()
@@ -167,12 +186,16 @@ def index():
         countries=all_countries,
         categories=all_categories,
         results_count=len(items),
+        error_message=error_message,
     )
 
 
 @app.get("/channel/<channel_id>")
 def channel_detail(channel_id: str):
-    channels_by_id, streams_by_channel = load_data()
+    try:
+        channels_by_id, streams_by_channel = load_data()
+    except Exception as exc:  # pylint: disable=broad-except
+        abort(503, description=f"Channel list unavailable: {exc}")
     ch = channels_by_id.get(channel_id)
     if not ch:
         abort(404)
@@ -183,7 +206,10 @@ def channel_detail(channel_id: str):
 
 @app.get("/watch/<channel_id>/<int:stream_index>")
 def watch(channel_id: str, stream_index: int):
-    channels_by_id, streams_by_channel = load_data()
+    try:
+        channels_by_id, streams_by_channel = load_data()
+    except Exception as exc:  # pylint: disable=broad-except
+        abort(503, description=f"Channel list unavailable: {exc}")
 
     ch = channels_by_id.get(channel_id)
     if not ch:
@@ -205,7 +231,10 @@ def watch(channel_id: str, stream_index: int):
 
 @app.post("/refresh")
 def force_refresh():
-    refresh_cache()
+    try:
+        refresh_cache()
+    except Exception as exc:  # pylint: disable=broad-except
+        abort(503, description=f"Unable to refresh cache: {exc}")
     return redirect(url_for("index"))
 
 
