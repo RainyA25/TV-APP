@@ -1,191 +1,145 @@
-from __future__ import annotations
-
 import os
+import re
 import time
-import json
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-
-import requests
-from flask import Flask, render_template, request, abort, redirect, url_for
+import uuid
+import threading
+from pathlib import Path
+from flask import Flask, render_template, request, send_from_directory, url_for
+import yt_dlp
 
 app = Flask(__name__)
 
-CHANNELS_URL = "https://iptv-org.github.io/api/channels.json"
-STREAMS_URL = "https://iptv-org.github.io/api/streams.json"
+# --- Config (Render-friendly) ---
+# Store downloads in /tmp by default (ephemeral on Render; won't persist across deploys/restarts)
+DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "/tmp/yt_downloads"))
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# Render: filesystem is ephemeral. Use /tmp for cache.
-CACHE_DIR = os.environ.get("CACHE_DIR", "/tmp/iptv_cache")
-CACHE_FILE = os.path.join(CACHE_DIR, "iptv_cache.json")
-CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "1800"))  # 30 min
+# Auto-cleanup: delete files older than N seconds (default 2 hours)
+MAX_FILE_AGE_SECONDS = int(os.getenv("MAX_FILE_AGE_SECONDS", str(2 * 60 * 60)))
 
-DEFAULT_COUNTRY = os.environ.get("DEFAULT_COUNTRY", "MX")
-
-
-@dataclass
-class Channel:
-    id: str
-    name: str
-    country: Optional[str]
-    categories: List[str]
+# Cleanup loop interval (default every 10 minutes)
+CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", str(10 * 60)))
 
 
-@dataclass
-class Stream:
-    channel: str
-    url: str
-    title: Optional[str] = None
-    quality: Optional[str] = None
-    referrer: Optional[str] = None
-    user_agent: Optional[str] = None
+def safe_prefix(s: str) -> str:
+    if not s:
+        return ""
+    s = s.strip()
+    s = re.sub(r"[^a-zA-Z0-9_-]+", "_", s)
+    return s[:40]
 
 
-def ensure_cache_dir() -> None:
-    os.makedirs(CACHE_DIR, exist_ok=True)
+def cleanup_old_files():
+    """Delete files older than MAX_FILE_AGE_SECONDS in DOWNLOAD_DIR."""
+    now = time.time()
+    deleted = 0
+    for p in DOWNLOAD_DIR.glob("*"):
+        try:
+            if p.is_file():
+                age = now - p.stat().st_mtime
+                if age > MAX_FILE_AGE_SECONDS:
+                    p.unlink(missing_ok=True)
+                    deleted += 1
+        except Exception:
+            # Best-effort cleanup; ignore failures
+            pass
+    return deleted
 
 
-def is_cache_fresh(path: str, ttl: int) -> bool:
-    if not os.path.exists(path):
-        return False
-    return (time.time() - os.path.getmtime(path)) < ttl
+def cleanup_worker():
+    """Background cleanup loop."""
+    while True:
+        try:
+            cleanup_old_files()
+        except Exception:
+            pass
+        time.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
-def fetch_json(url: str, timeout: int = 25):
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
-
-
-def refresh_cache() -> None:
-    ensure_cache_dir()
-    payload = {
-        "channels": fetch_json(CHANNELS_URL),
-        "streams": fetch_json(STREAMS_URL),
-        "fetched_at": int(time.time()),
-    }
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-
-
-def load_data() -> Tuple[Dict[str, Channel], Dict[str, List[Stream]]]:
-    ensure_cache_dir()
-    if not is_cache_fresh(CACHE_FILE, CACHE_TTL_SECONDS):
-        refresh_cache()
-
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        payload = json.load(f)
-
-    channels_by_id: Dict[str, Channel] = {}
-    for c in payload["channels"]:
-        channels_by_id[c["id"]] = Channel(
-            id=c["id"],
-            name=c.get("name") or c["id"],
-            country=c.get("country"),
-            categories=c.get("categories") or [],
-        )
-
-    streams_by_channel: Dict[str, List[Stream]] = {}
-    for s in payload["streams"]:
-        ch = s.get("channel")
-        url = s.get("url")
-        if not ch or not url:
-            continue
-        if ch not in channels_by_id:
-            continue
-
-        st = Stream(
-            channel=ch,
-            url=url,
-            title=s.get("title"),
-            quality=s.get("quality"),
-            referrer=s.get("referrer"),
-            user_agent=s.get("user_agent"),
-        )
-        streams_by_channel.setdefault(ch, []).append(st)
-
-    return channels_by_id, streams_by_channel
-
-
-def browser_playable(stream: Stream) -> bool:
-    # Browsers cannot set Referer/User-Agent reliably via JS for HLS segment requests.
-    # Also avoid obvious non-http(s) URLs.
-    if not stream.url.startswith(("http://", "https://")):
-        return False
-    if stream.referrer or stream.user_agent:
-        return False
-    return True
+# Start background cleanup once when the app boots
+threading.Thread(target=cleanup_worker, daemon=True).start()
 
 
 @app.get("/")
 def index():
-    channels_by_id, streams_by_channel = load_data()
-
-    q = (request.args.get("q") or "").strip().lower()
-    country = (request.args.get("country") or DEFAULT_COUNTRY).strip()
-    category = (request.args.get("category") or "").strip()
-
-    countries = sorted({c.country for c in channels_by_id.values() if c.country})
-    categories = sorted({cat for c in channels_by_id.values() for cat in c.categories})
-
-    items = []
-    for ch_id, ch in channels_by_id.items():
-        streams = streams_by_channel.get(ch_id, [])
-        streams = [s for s in streams if browser_playable(s)]
-        if not streams:
-            continue
-
-        if country and ch.country != country:
-            continue
-        if category and category not in ch.categories:
-            continue
-        if q and (q not in ch.name.lower() and q not in ch.id.lower()):
-            continue
-
-        items.append({"channel": ch, "streams": streams})
-
-    items.sort(key=lambda x: x["channel"].name.lower())
-
-    return render_template(
-        "index.html",
-        items=items,
-        q=q,
-        country=country,
-        category=category,
-        countries=countries,
-        categories=categories,
-        results_count=len(items),
-    )
+    return render_template("index.html", message=None, ok=True)
 
 
-@app.get("/channel/<channel_id>")
-def channel_detail(channel_id: str):
-    channels_by_id, streams_by_channel = load_data()
-    ch = channels_by_id.get(channel_id)
-    if not ch:
-        abort(404)
+@app.post("/download")
+def download():
+    # Also run a quick cleanup on each download request (keeps disk tidy even if worker sleeps)
+    cleanup_old_files()
 
-    streams = [s for s in streams_by_channel.get(channel_id, []) if browser_playable(s)]
-    return render_template("channel.html", ch=ch, streams=streams)
+    url = (request.form.get("url") or "").strip()
+    mode = (request.form.get("mode") or "best").strip()
+    prefix = safe_prefix(request.form.get("prefix") or "")
+
+    if not url:
+        return render_template("index.html", message="Missing URL.", ok=False)
+
+    job_id = uuid.uuid4().hex[:10]
+    outtmpl = str(DOWNLOAD_DIR / f"{prefix}{job_id}_%(title).200s.%(ext)s")
+
+    ydl_opts = {
+        "outtmpl": outtmpl,
+        "noplaylist": True,
+        "restrictfilenames": True,
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    if mode == "audio":
+        ydl_opts.update({
+            "format": "bestaudio/best",
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        })
+    else:
+        ydl_opts.update({
+            "format": "bv*+ba/best",
+            "merge_output_format": "mp4",
+        })
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        downloaded_path = None
+        req = info.get("requested_downloads")
+        if isinstance(req, list) and req:
+            downloaded_path = req[0].get("filepath") or req[0].get("_filename")
+
+        if not downloaded_path:
+            downloaded_path = info.get("_filename")
+
+        if not downloaded_path:
+            candidates = sorted(DOWNLOAD_DIR.glob(f"{prefix}{job_id}_*"))
+            if candidates:
+                downloaded_path = str(candidates[-1])
+
+        if not downloaded_path or not os.path.exists(downloaded_path):
+            return render_template(
+                "index.html",
+                message="Download finished but file was not found. Ensure FFmpeg is installed for merging/extracting.",
+                ok=False,
+            )
+
+        filename = os.path.basename(downloaded_path)
+        link = url_for("get_file", filename=filename)
+        msg = f"Done. <a href='{link}'>Click here to download</a>.<br><small>Files auto-delete after ~{MAX_FILE_AGE_SECONDS//60} minutes.</small>"
+        return render_template("index.html", message=msg, ok=True)
+
+    except yt_dlp.utils.DownloadError as e:
+        return render_template("index.html", message=f"Download error: {e}", ok=False)
+    except Exception as e:
+        return render_template("index.html", message=f"Unexpected error: {e}", ok=False)
 
 
-@app.get("/play/<channel_id>/<int:stream_index>")
-def play(channel_id: str, stream_index: int):
-    _, streams_by_channel = load_data()
-    streams = [s for s in streams_by_channel.get(channel_id, []) if browser_playable(s)]
-    if not streams or stream_index < 0 or stream_index >= len(streams):
-        abort(404)
-
-    stream = streams[stream_index]
-    return render_template("player.html", channel_id=channel_id, stream=stream)
-
-
-@app.post("/refresh")
-def force_refresh():
-    refresh_cache()
-    return redirect(url_for("index"))
-
-
-if __name__ == "__main__":
-    # Render provides PORT env var
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+@app.get("/files/<path:filename>")
+def get_file(filename):
+    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
