@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>YT Downloader</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; max-width: 720px; margin: 48px auto; padding: 0 16px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 18px; }
+    input, select, button { width: 100%; padding: 12px; margin-top: 10px; border-radius: 10px; border: 1px solid #d1d5db; }
+    button { cursor: pointer; font-weight: 600; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .msg { margin-top: 14px; padding: 12px; border-radius: 10px; }
+    .ok { background: #ecfdf5; border: 1px solid #a7f3d0; }
+    .err { background: #fef2f2; border: 1px solid #fecaca; }
+    a { word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>YT Downloader</h1>
+
+  <div class="card">
+    <form method="POST" action="/download">
+      <label>Video URL</label>
+      <input name="url" placeholder="https://www.youtube.com/watch?v=..." required />
+
+      <div class="row">
+        <div>
+          <label>Format</label>
+          <select name="mode">
+            <option value="best">Best (video+audio)</option>
+            <option value="audio">Audio only (mp3)</option>
+          </select>
+        </div>
+        <div>
+          <label>Filename prefix (optional)</label>
+          <input name="prefix" placeholder="my_video_" />
+        </div>
+      </div>
+
+      <button type="submit">Download</button>
+    </form>
+
+    {% if message %}
+      <div class="msg {{ 'ok' if ok else 'err' }}">
+        {{ message|safe }}
+      </div>
+    {% endif %}
+  </div>
+</body>
+</html>
